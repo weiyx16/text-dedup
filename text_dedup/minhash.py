@@ -224,6 +224,8 @@ if __name__ == "__main__":
 
     if args.b is not None and args.r is not None:
         B, R = args.b, args.r
+        B, R = optimal_param(args.threshold, args.num_perm)
+        print(f"B: {B}, R: {R}")
     else:
         B, R = optimal_param(args.threshold, args.num_perm)
 
@@ -233,7 +235,13 @@ if __name__ == "__main__":
     with timer("Total"):
         with timer("Loading"):
             if args.local:
-                ds = load_from_disk(args.path)
+                # ds = load_from_disk(args.path)
+
+                # https://huggingface.co/docs/datasets/v2.10.0/en/package_reference/loading_methods#datasets.load_dataset.example-2
+                # our \n\n separated txt format.
+                ds = load_dataset("text", data_dir=args.path, sample_by="paragraph") # see samples: ds['train'][0]; only train split
+                # the problem is sepation methods... it automatically groups the sentence before \n but we use \n\n.
+                # so switch sample_by from "sentence" to "paragraph" to get the same result as the original code
             else:
                 ds = load_dataset(
                     path=args.path,
