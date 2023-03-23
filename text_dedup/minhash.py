@@ -4,6 +4,15 @@
 # created     : 10/4/22
 from __future__ import annotations
 
+import logging
+
+from rich.logging import RichHandler
+
+logger = logging.getLogger("text_dedup")
+logger.setLevel(logging.INFO)
+logger.addHandler(RichHandler(rich_tracebacks=True))
+logger.propagate = False
+
 import argparse
 import gc
 import hashlib
@@ -26,13 +35,13 @@ from datasets import load_from_disk
 from scipy.integrate import quad as integrate
 from tqdm import tqdm
 
-from text_dedup import logger
-from text_dedup.utils import UnionFind
-from text_dedup.utils import ngrams
-from text_dedup.utils.add_args import add_io_args
-from text_dedup.utils.add_args import add_meta_args
-from text_dedup.utils.add_args import add_minhash_args
-from text_dedup.utils.timer import Timer
+# from text_dedup import logger
+from utils import UnionFind
+from utils import ngrams
+from utils.add_args import add_io_args
+from utils.add_args import add_meta_args
+from utils.add_args import add_minhash_args
+from utils.timer import Timer
 
 SEED = 42
 RNG = np.random.RandomState(SEED)
@@ -129,12 +138,12 @@ def embed_func(
     """
     a, b = permutations
     masks: np.ndarray = np.full(shape=num_perm, dtype=np.uint64, fill_value=MAX_HASH)
-    tokens: Set[str] = {" ".join(t) for t in ngrams(NON_ALPHA.split(content), ngram_size)}
+    tokens: Set[str] = {" ".join(t) for t in ngrams(list(filter(lambda x: len(x) > 0, NON_ALPHA.split(content))), ngram_size)}
     hashvalues: np.ndarray = np.array([sha1_hash(token.encode("utf-8")) for token in tokens], dtype=np.uint64)
     permuted_hashvalues = np.bitwise_and(
         ((hashvalues * np.tile(a, (len(hashvalues), 1)).T).T + b) % MERSENNE_PRIME, MAX_HASH
     )
-    print(permuted_hashvalues)
+    # print(permuted_hashvalues)
     hashvalues = np.vstack([permuted_hashvalues, masks]).min(axis=0)
     Hs = [bytes(hashvalues[start:end].byteswap().data) for start, end in hashranges]
     return {"__signatures__": Hs, "__id__": idx}
@@ -228,6 +237,7 @@ if __name__ == "__main__":
         print(f"B: {B}, R: {R}")
     else:
         B, R = optimal_param(args.threshold, args.num_perm)
+        print(f"B: {B}, R: {R}")
 
     HASH_RANGES = [(i * R, (i + 1) * R) for i in range(B)]
     HASH_TABLES: List[Dict[int, Set]] = [defaultdict(set) for _ in range(B)]
@@ -239,7 +249,7 @@ if __name__ == "__main__":
 
                 # https://huggingface.co/docs/datasets/v2.10.0/en/package_reference/loading_methods#datasets.load_dataset.example-2
                 # our \n\n separated txt format.
-                ds = load_dataset("text", data_dir=args.path, sample_by="paragraph") # see samples: ds['train'][0]; only train split
+                ds = load_dataset("text", data_dir=args.path, sample_by="paragraph", split='train') # see samples: ds['train'][0]; only train split
                 # the problem is sepation methods... it automatically groups the sentence before \n but we use \n\n.
                 # so switch sample_by from "sentence" to "paragraph" to get the same result as the original code
             else:

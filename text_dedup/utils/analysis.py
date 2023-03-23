@@ -9,8 +9,8 @@ import datasets
 import numpy as np
 from tqdm import tqdm
 
-from text_dedup.utils.tokenization import ngrams
-from text_dedup.utils.union_find import UnionFind
+from .tokenization import ngrams
+from .union_find import UnionFind
 
 
 def jaccard_similarity(doc1, doc2):
