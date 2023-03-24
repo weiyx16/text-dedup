@@ -1,7 +1,9 @@
 import hashlib
 import re
+import os
 import struct
 import sys
+from tqdm import tqdm
 from itertools import tee
 from logging import Logger
 from typing import Iterable
@@ -12,6 +14,7 @@ import numpy as np
 from pyspark import SparkConf
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql import Row
 from scipy.integrate import quad as integrate
 
 SEED = 42
@@ -51,7 +54,7 @@ def small_star_reduce(group):
 def ngrams(sequence: List[str], n: int) -> Iterable:
     """
     Code taken from NLTK, without padding.
-
+    [Almost same as the one in utils/tokenization.py]
     Parameters
     ----------
     sequence : list
@@ -135,7 +138,7 @@ def generate_hash_values(
         The list of (band_idx, hash value, idx) for the document.
     """
     hashvalues = np.ones(num_perm, dtype=np.uint64) * MAX_HASH
-    tokens = {" ".join(t) for t in ngrams(NON_ALPHA.split(content), ngram_size)}
+    tokens = {" ".join(t) for t in ngrams(list(filter(lambda x: len(x) > 0, NON_ALPHA.split(content))), ngram_size)}
     hv = np.array([sha1_hash32(token.encode("utf-8")) for token in tokens], dtype=np.uint64)
     a, b = permutations
     phv = np.bitwise_and(((hv * np.tile(a, (len(hv), 1)).T).T + b) % MERSENNE_PRIME, MAX_HASH)
@@ -231,12 +234,37 @@ def generate_edges(nodes: List[int]) -> List[Tuple[int, int]]:
     return [(n, min_node) for n in nodes if n != min_node]
 
 
+def lines2passage(ls, spark):
+    """
+        lines2passage (single files)
+    """
+    blocks = []
+    tmp = ''
+    for l in ls:
+        if l == '\n':
+            if tmp.strip()=='':
+                tmp = ''
+                continue
+            blocks.append(Row(text=tmp))
+            tmp = ''
+        else:
+            tmp = tmp+l.strip('\n')
+    try:
+        pd = spark.createDataFrame(blocks)
+        stat = True
+    except:
+        pd = None
+        stat = False
+    return pd, stat
+
+
 if __name__ == "__main__":
 
     import argparse
 
     parser = argparse.ArgumentParser(description="Near-deduplicating BigQuery Table with PySpark")
-    parser.add_argument("--table", type=str, required=True, help="BigQuery table to deduplicate")
+    parser.add_argument("--table", type=str, default=None, help="BigQuery table to deduplicate")
+    parser.add_argument("--data_path", type=str, default=None, help="data_path to list of files")
     parser.add_argument("--threshold", type=float, default=0.7, help="Similarity threshold")
     parser.add_argument("--ngram_size", type=int, default=5, help="N-gram size")
     parser.add_argument("--num_perm", type=int, default=256, help="Number of permutations")
@@ -248,15 +276,21 @@ if __name__ == "__main__":
 
     conf = SparkConf()
     conf.set("spark.app.name", "MinHashLSH")
-    conf.set("spark.debug.maxToStringFields", "100")
+    conf.set("spark.sql.debug.maxToStringFields", "100")
+    conf.set('spark.executor.memory','300g')  # 50g
+    conf.set('spark.driver.memory','8g')      # 8g
+    conf.set('spark.executor.cores','64')
+    # conf.set('spark.driver.maxResultsSize','0')
     spark = SparkSession.builder.config(conf=conf).getOrCreate()
     log: Logger = spark.sparkContext._jvm.org.apache.log4j.LogManager.getLogger(__name__)  # type: ignore
 
     if args.b is None or args.r is None:
         B, R = optimal_param(args.threshold, args.num_perm)
-        log.info(f"Using optimal parameters: {B=}, {R=}")
+        log.info(f"Using optimal parameters: {B}, {R}")
     else:
         B, R = args.b, args.r
+        _B, _R = optimal_param(args.threshold, args.num_perm)
+        log.info(f"Using parameters: {B}, {R}, with optimal parameters: {_B}, {_R}")
 
     HASH_RANGES = [(i * R, (i + 1) * R) for i in range(B)]
     PERMUTATIONS = np.array(
@@ -270,12 +304,27 @@ if __name__ == "__main__":
         dtype=np.uint64,
     ).T
 
-    df = spark.read.format("bigquery").option("table", args.table).load()
+    # TODO: what's format of bigquery?
+    if args.table:
+        df = spark.read.format("bigquery").option("table", args.table).load()
+    elif args.data_path:
+        files = os.listdir(args.data_path)
+        for f in tqdm(files):
+            path = os.path.join(args.data_path, f)
+            fio = open(path, 'r')
+            lines = fio.readlines() 
+            df, stat = lines2passage(lines, spark)
+
+    # add new ids with monotonically_increasing_id(to ensure un-deduplicated)
     df = df.withColumn("__id__", F.monotonically_increasing_id()).cache()
+    # Select two colums: __id__ and args.column(which we need to dedup) and Switch to rdd format. [RDD is for parallelization]
     records = df.select("__id__", args.column).rdd
+    # Re-distributed rdd with args.num_perm * 2; Create a new RDD; and Persist this RDD with the default storage level (MEMORY_ONLY) using cache()
     records = records.repartition(args.num_perm * 2).cache()
 
     edges = (
+        # do hash generate on every items
+        # return band_idx, hash_value, idx
         records.flatMap(
             lambda x: generate_hash_values(
                 content=x[1],
@@ -286,12 +335,16 @@ if __name__ == "__main__":
                 permutations=PERMUTATIONS,
             )
         )
+        # group by band_idx&hash_value (find ones in the same band with same hash value)
         .groupBy(lambda x: (x[0], x[1]))
+        # for each hash value we get edges?
         .flatMap(lambda x: generate_edges([i[2] for i in x[1]]))
+        # Return a new RDD containing the distinct elements in this RDD. 
         .distinct()
         .cache()
     )
 
+    # TODO: What the purpose of connected component algorithm?
     a = edges
     while True:
         b = a.flatMap(large_star_map).groupByKey().flatMap(large_star_reduce).distinct().cache()
@@ -303,6 +356,7 @@ if __name__ == "__main__":
     results = a.collect()
     if len(results) == 0:
         log.info("No components found.")
+        # pop out added new column `__id__`
         df = df.drop("__id__").cache()
         df.write.json(args.output, mode="overwrite")
         sys.exit(0)
@@ -311,4 +365,5 @@ if __name__ == "__main__":
     components.show()
     df = df.join(components, on="__id__", how="left")
     df = df.filter(F.col("component").isNull()).drop("__id__", "component").cache()
+    # TODO: write out to txt?
     df.write.json(args.output, mode="overwrite")
