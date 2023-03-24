@@ -15,7 +15,10 @@ from pyspark import SparkConf
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import Row
+from pyspark.sql import DataFrame
 from scipy.integrate import quad as integrate
+
+from functools import reduce  # For Python 3.x
 
 SEED = 42
 NON_ALPHA = re.compile("[^A-Za-z_0-9]")
@@ -138,7 +141,7 @@ def generate_hash_values(
         The list of (band_idx, hash value, idx) for the document.
     """
     hashvalues = np.ones(num_perm, dtype=np.uint64) * MAX_HASH
-    tokens = {" ".join(t) for t in ngrams(list(filter(lambda x: len(x) > 0, NON_ALPHA.split(content))), ngram_size)}
+    tokens = {" ".join(t) for t in ngrams(list(filter(lambda x: len(x) > 0, NON_ALPHA.split(content.replace('\n', ' ')))), ngram_size)}
     hv = np.array([sha1_hash32(token.encode("utf-8")) for token in tokens], dtype=np.uint64)
     a, b = permutations
     phv = np.bitwise_and(((hv * np.tile(a, (len(hv), 1)).T).T + b) % MERSENNE_PRIME, MAX_HASH)
@@ -248,7 +251,7 @@ def lines2passage(ls, spark):
             blocks.append(Row(text=tmp))
             tmp = ''
         else:
-            tmp = tmp+l.strip('\n')
+            tmp = tmp+l.strip('\n')+'\n' # we want to keep sentence information and we don't take it into consideration in the n-gram creatation
     try:
         pd = spark.createDataFrame(blocks)
         stat = True
@@ -256,6 +259,10 @@ def lines2passage(ls, spark):
         pd = None
         stat = False
     return pd, stat
+
+
+def unionAll(dfs):
+    return reduce(DataFrame.unionAll, dfs)
 
 
 if __name__ == "__main__":
@@ -277,6 +284,8 @@ if __name__ == "__main__":
     conf = SparkConf()
     conf.set("spark.app.name", "MinHashLSH")
     conf.set("spark.sql.debug.maxToStringFields", "100")
+    # conf.set("spark.sql.files.maxRecordsPerFile", "0")  # no-limited save rows to files; Maximum number of records to write out to a single file. If this value is zero or negative, there is no limit.
+    # conf.set("spark.sql.shuffle.partitions", "200")  # it seems to control the output file numbers, since we don't gather them, so the number is equal to the partitions. # The default number of partitions to use when shuffling data for joins or aggregations. Note: For structured streaming, this configuration cannot be changed between query restarts from the same checkpoint location.
     conf.set('spark.executor.memory','300g')  # 50g
     conf.set('spark.driver.memory','8g')      # 8g
     conf.set('spark.executor.cores','64')
@@ -309,11 +318,15 @@ if __name__ == "__main__":
         df = spark.read.format("bigquery").option("table", args.table).load()
     elif args.data_path:
         files = os.listdir(args.data_path)
+        dfs = []
         for f in tqdm(files):
             path = os.path.join(args.data_path, f)
             fio = open(path, 'r')
             lines = fio.readlines() 
             df, stat = lines2passage(lines, spark)
+            dfs.append(df)
+        df = unionAll(dfs)
+        
 
     # add new ids with monotonically_increasing_id(to ensure un-deduplicated)
     df = df.withColumn("__id__", F.monotonically_increasing_id()).cache()
@@ -365,5 +378,6 @@ if __name__ == "__main__":
     components.show()
     df = df.join(components, on="__id__", how="left")
     df = df.filter(F.col("component").isNull()).drop("__id__", "component").cache()
-    # TODO: write out to txt?
-    df.write.json(args.output, mode="overwrite")
+    # TODO: write out to txt and control the size? saveAsTextFile
+    # df.write.json(args.output, mode="overwrite")
+    df.write.format("json").mode("overwrite").save(args.output)
