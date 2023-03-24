@@ -12,6 +12,7 @@ from typing import Tuple
 
 import numpy as np
 from pyspark import SparkConf
+from pyspark import StorageLevel
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import Row
@@ -254,8 +255,10 @@ def lines2passage(ls, spark):
             tmp = tmp+l.strip('\n')+'\n' # we want to keep sentence information and we don't take it into consideration in the n-gram creatation
     try:
         pd = spark.createDataFrame(blocks)
+        pd = pd.persist(StorageLevel.MEMORY_AND_DISK)
         stat = True
-    except:
+    except Exception as e:
+        print("Error in loading, ", e)
         pd = None
         stat = False
     return pd, stat
@@ -324,16 +327,19 @@ if __name__ == "__main__":
             fio = open(path, 'r')
             lines = fio.readlines() 
             df, stat = lines2passage(lines, spark)
-            dfs.append(df)
+            if stat:
+                dfs.append(df)
+            else:
+                print(f"Warning! Loading {f} failed.")
         df = unionAll(dfs)
         
 
     # add new ids with monotonically_increasing_id(to ensure un-deduplicated)
-    df = df.withColumn("__id__", F.monotonically_increasing_id()).cache()
+    df = df.withColumn("__id__", F.monotonically_increasing_id()).persist(StorageLevel.MEMORY_AND_DISK) # .cache()
     # Select two colums: __id__ and args.column(which we need to dedup) and Switch to rdd format. [RDD is for parallelization]
     records = df.select("__id__", args.column).rdd
     # Re-distributed rdd with args.num_perm * 2; Create a new RDD; and Persist this RDD with the default storage level (MEMORY_ONLY) using cache()
-    records = records.repartition(args.num_perm * 2).cache()
+    records = records.repartition(args.num_perm * 2).persist(StorageLevel.MEMORY_AND_DISK) ##.cache()
 
     edges = (
         # do hash generate on every items
@@ -354,7 +360,8 @@ if __name__ == "__main__":
         .flatMap(lambda x: generate_edges([i[2] for i in x[1]]))
         # Return a new RDD containing the distinct elements in this RDD. 
         .distinct()
-        .cache()
+        .persist(StorageLevel.MEMORY_ONLY)
+        # .cache()
     )
 
     # TODO: What the purpose of connected component algorithm?
@@ -377,7 +384,7 @@ if __name__ == "__main__":
     components = spark.createDataFrame(results, schema=["__id__", "component"]).sort(["component", "__id__"])
     components.show()
     df = df.join(components, on="__id__", how="left")
-    df = df.filter(F.col("component").isNull()).drop("__id__", "component").cache()
+    df = df.filter(F.col("component").isNull()).drop("__id__", "component").persist(StorageLevel.MEMORY_AND_DISK) # cache()
     # TODO: write out to txt and control the size? saveAsTextFile
     # df.write.json(args.output, mode="overwrite")
     df.write.format("json").mode("overwrite").save(args.output)
