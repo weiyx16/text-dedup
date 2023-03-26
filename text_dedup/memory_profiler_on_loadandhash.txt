@@ -1,0 +1,215 @@
+Line #    Mem usage    Increment  Occurrences   Line Contents
+=============================================================
+   287    136.7 MiB    136.7 MiB           1   @profile
+   288                                         def load_and_hash(files, args):
+   289    136.7 MiB      0.0 MiB           1       records = None
+   290    136.7 MiB      0.0 MiB           1       previous_max_value = 0
+   291    139.0 MiB      2.2 MiB           1       for f in tqdm(files):
+   292    139.0 MiB      0.0 MiB           1           path = os.path.join(args.data_path, f)
+   293    139.0 MiB      0.0 MiB           1           fio = open(path, 'r')
+   294   1035.0 MiB    896.0 MiB           1           lines = fio.readlines()
+   295   2349.4 MiB   1314.4 MiB           1           df, stat = lines2passage(lines, spark)
+   296                                                 #lines = [base64.b64decode(l).decode('utf-8') for l in raw_lines]
+   297                                                 #try:
+   298                                                 #    df = spark.createDataFrame(lines, schema='text string')
+   299                                                 #    # pd = pd.persist(StorageLevel.MEMORY_AND_DISK)
+   300                                                 #    stat = True
+   301                                                 #except Exception as e:
+   302                                                 #    print("Error in loading, ", e)
+   303                                                 #    df = None
+   304                                                 #    stat = False
+   305   1553.3 MiB   -796.1 MiB           1           del lines
+   # 一个466M的文本，转成df之后直接1314MB，还删不掉这部分内存..
+   306   1553.3 MiB      0.0 MiB           1           if stat:
+   307                                                     # add new ids with monotonically_increasing_id(to ensure un-deduplicated)
+   308   1553.3 MiB      0.0 MiB           1               df = df.withColumn("__id__", F.monotonically_increasing_id()).cache()
+   309                                                     # https://kb.databricks.com/en_US/sql/gen-unique-increasing-values
+   310   1553.3 MiB      0.0 MiB           1               window = Window.orderBy(F.col('__id__'))
+   311                                                     # begin with row_number = 1
+   312   1553.3 MiB      0.0 MiB           1               df = df.withColumn("__idconsec__", F.row_number().over(window) + F.lit(previous_max_value))
+   313                                                     # save to disk for later read in
+   314   1553.3 MiB      0.0 MiB           1               df.write.format("json").mode("overwrite").save(args.data_path+'_tmp_withid/'+f)
+   315                                                     # os.rmtree(path)
+   316                                                     # get the next beginning
+   317   1553.3 MiB      0.0 MiB           1               previous_max_value = df.agg({"__idconsec__": "max"}).first()[0]
+   318                                                     # Select two colums: __id__ and args.column(which we need to dedup) and Switch to rdd format. [RDD is for parallelization]
+   319   1553.3 MiB      0.0 MiB           1               df = df.select("__idconsec__", args.column).rdd
+   320                                                     # Re-distributed rdd with args.num_perm * 2; Create a new RDD; and Persist this RDD with the default storage level (MEMORY_ONLY) using cache()
+   321   1553.3 MiB      0.0 MiB           1               df = df.repartition(args.num_perm * 2).cache()
+   322                                                     # do hash generate on every items
+   323                                                     # return band_idx, hash_value, idx
+   324   1553.3 MiB      0.0 MiB           2               df = df.flatMap(
+   325   1553.3 MiB      0.0 MiB           1                   lambda x: generate_hash_values(
+   326                                                             content=x[1],
+   327                                                             idx=x[0],
+   328                                                             num_perm=args.num_perm,
+   329                                                             ngram_size=args.ngram_size,
+   330                                                             hashranges=HASH_RANGES,
+   331                                                             permutations=PERMUTATIONS,
+   332                                                         )
+   333                                                     )
+   334   1553.3 MiB      0.0 MiB           1               if records:
+   335                                                         records = records.union(df)
+   336                                                     else:
+   337   1553.3 MiB      0.0 MiB           1                   records = df
+   338                                                     # https://stackoverflow.com/a/39967109/11821194
+   339                                                     # actully del df + gc.collect() will unpersist the rdd directly
+   340   1553.3 MiB      0.0 MiB           1               df.unpersist()
+   341   1553.3 MiB      0.0 MiB           1               del df
+   342   1553.3 MiB      0.0 MiB           1               gc.collect()
+   343                                                     # deptColumns = ["bucket_id","hashes","__idconsec__"]
+   344                                                     # print(records.toDF(deptColumns).agg({"__idconsec__": "max"}).first()[0])
+   345                                                 else:
+   346                                                     print(f"Warning! Loading {f} failed.")
+   347                                                 # if we want to save hashes; [but we are still facing loading b64decode problem; maybe the utf-8 encoding by-default in csv dumping?]
+   348                                                 # try: records.toDF().write.format("csv").mode("overwrite").save(args.output)
+   349                                                 # and in generate_hash: use base64.b64encode(bytes(hashvalues[start:end].byteswap().data))
+   350                                                 # load and decode:
+   351                                                 # df = spark.read.option("delimiter", ",").csv(args.data_path).rdd
+   352                                                 # df = df.flatMap(lambda x: [x[0], base64.b64decode(x[1]), x[2]]).cache()
+   353   1553.3 MiB      0.0 MiB           1           return records
+
+
+但是两个file的情况：貌似内存增加有限
+Line #    Mem usage    Increment  Occurrences   Line Contents
+=============================================================
+   287    186.4 MiB    186.4 MiB           1   @profile
+   288                                         def load_and_hash(files, args):
+   289    186.4 MiB      0.0 MiB           1       records = None
+   290    186.4 MiB      0.0 MiB           1       previous_max_value = 0
+   291   1639.0 MiB      2.2 MiB           3       for f in tqdm(files):
+   292   1602.8 MiB      0.0 MiB           2           path = os.path.join(args.data_path, f)
+   293   1602.8 MiB      0.0 MiB           2           fio = open(path, 'r')
+   294   2364.6 MiB   1658.0 MiB           2           lines = fio.readlines()
+   295   2399.7 MiB   1349.3 MiB           2           df, stat = lines2passage(lines, spark)
+   296                                                 #lines = [base64.b64decode(l).decode('utf-8') for l in raw_lines]
+   297                                                 #try:
+   298                                                 #    df = spark.createDataFrame(lines, schema='text string')
+   299                                                 #    # pd = pd.persist(StorageLevel.MEMORY_AND_DISK)
+   300                                                 #    stat = True
+   301                                                 #except Exception as e:
+   302                                                 #    print("Error in loading, ", e)
+   303                                                 #    df = None
+   304                                                 #    stat = False
+   305   1639.0 MiB  -1557.0 MiB           2           del lines
+   306   1639.0 MiB      0.0 MiB           2           if stat:
+   307                                                     # add new ids with monotonically_increasing_id(to ensure un-deduplicated)
+   308   1639.0 MiB      0.0 MiB           2               df = df.withColumn("__id__", F.monotonically_increasing_id())
+   309                                                     # https://kb.databricks.com/en_US/sql/gen-unique-increasing-values
+   310   1639.0 MiB      0.0 MiB           2               window = Window.orderBy(F.col('__id__'))
+   311                                                     # begin with row_number = 1
+   312   1639.0 MiB      0.0 MiB           2               df = df.withColumn("__idconsec__", F.row_number().over(window) + F.lit(previous_max_value))
+   313                                                     # save to disk for later read in
+   314   1639.0 MiB      0.0 MiB           2               df.write.format("json").mode("overwrite").save(args.data_path+'_tmp_withid/'+f)
+   315                                                     # os.rmtree(path)
+   316                                                     # get the next beginning
+   317   1639.0 MiB      0.0 MiB           2               previous_max_value = df.agg({"__idconsec__": "max"}).first()[0]
+   318                                                     # Select two colums: __id__ and args.column(which we need to dedup) and Switch to rdd format. [RDD is for parallelization]
+   319   1639.0 MiB      0.0 MiB           2               df = df.select("__idconsec__", args.column).rdd
+   320                                                     # Re-distributed rdd with args.num_perm * 2; Create a new RDD; and Persist this RDD with the default storage level (MEMORY_ONLY) using cache()
+   321   1639.0 MiB      0.0 MiB           2               df = df.repartition(args.num_perm * 2)
+   322                                                     # do hash generate on every items
+   323                                                     # return band_idx, hash_value, idx
+   324   1639.0 MiB      0.0 MiB           4               df = df.flatMap(
+   325   1639.0 MiB      0.0 MiB           2                   lambda x: generate_hash_values(
+   326                                                             content=x[1],
+   327                                                             idx=x[0],
+   328                                                             num_perm=args.num_perm,
+   329                                                             ngram_size=args.ngram_size,
+   330                                                             hashranges=HASH_RANGES,
+   331                                                             permutations=PERMUTATIONS,
+   332                                                         )
+   333                                                     )
+   334   1639.0 MiB      0.0 MiB           2               if records:
+   335   1639.0 MiB      0.0 MiB           1                   records = records.union(df)
+   336                                                     else:
+   337   1602.8 MiB      0.0 MiB           1                   records = df
+   338                                                     # https://stackoverflow.com/a/39967109/11821194
+   339                                                     # actully del df + gc.collect() will unpersist the rdd directly
+   340   1639.0 MiB      0.0 MiB           2               df.unpersist()
+   341   1639.0 MiB      0.0 MiB           2               del df
+   342   1639.0 MiB      0.0 MiB           2               gc.collect()
+   343                                                     # deptColumns = ["bucket_id","hashes","__idconsec__"]
+   344                                                     # print(records.toDF(deptColumns).agg({"__idconsec__": "max"}).first()[0])
+   345                                                 else:
+   346                                                     print(f"Warning! Loading {f} failed.")
+   347                                                 # if we want to save hashes; [but we are still facing loading b64decode problem; maybe the utf-8 encoding by-default in csv dumping?]
+   348                                                 # try: records.toDF().write.format("csv").mode("overwrite").save(args.output)
+   349                                                 # and in generate_hash: use base64.b64encode(bytes(hashvalues[start:end].byteswap().data))
+   350                                                 # load and decode:
+   351                                                 # df = spark.read.option("delimiter", ",").csv(args.data_path).rdd
+   352                                                 # df = df.flatMap(lambda x: [x[0], base64.b64decode(x[1]), x[2]]).cache()
+   353   1639.0 MiB      0.0 MiB           1       return records
+
+4个file的情况; 但是3G的driver mem就炸了.. 增加到4G的mem能跑完，但是显示的mem usage有限；
+此时第二步 edges的部分跑不完;    5gb全部都跑完，差不多还是3倍的memory consumption
+
+Line #    Mem usage    Increment  Occurrences   Line Contents
+=============================================================
+   287    144.7 MiB    144.7 MiB           1   @profile
+   288                                         def load_and_hash(files, args):
+   289    144.7 MiB      0.0 MiB           1       records = None
+   290    144.7 MiB      0.0 MiB           1       previous_max_value = 0
+   291   1598.1 MiB     -4.3 MiB           5       for f in tqdm(files):
+   292   1598.1 MiB     -5.5 MiB           4           path = os.path.join(args.data_path, f)
+   293   1598.1 MiB     -5.5 MiB           4           fio = open(path, 'r')
+   294   2358.5 MiB   3171.6 MiB           4           lines = fio.readlines()
+   295   2361.4 MiB   1351.4 MiB           4           df, stat = lines2passage(lines, spark)
+   296                                                 #lines = [base64.b64decode(l).decode('utf-8') for l in raw_lines]
+   297                                                 #try:
+   298                                                 #    df = spark.createDataFrame(lines, schema='text string')
+   299                                                 #    # pd = pd.persist(StorageLevel.MEMORY_AND_DISK)
+   300                                                 #    stat = True
+   301                                                 #except Exception as e:
+   302                                                 #    print("Error in loading, ", e)
+   303                                                 #    df = None
+   304                                                 #    stat = False
+   305   1598.4 MiB  -3089.1 MiB           4           del lines
+   306   1598.4 MiB     -6.3 MiB           4           if stat:
+   307                                                     # add new ids with monotonically_increasing_id(to ensure un-deduplicated)
+   308   1598.4 MiB     -6.3 MiB           4               df = df.withColumn("__id__", F.monotonically_increasing_id())
+   309                                                     # https://kb.databricks.com/en_US/sql/gen-unique-increasing-values
+   310   1598.4 MiB     -6.3 MiB           4               window = Window.orderBy(F.col('__id__'))
+   311                                                     # begin with row_number = 1
+   312   1598.4 MiB     -6.3 MiB           4               df = df.withColumn("__idconsec__", F.row_number().over(window) + F.lit(previous_max_value))
+   313                                                     # save to disk for later read in
+   314   1598.4 MiB     -6.5 MiB           4               df.write.format("json").mode("overwrite").save(args.data_path+'_tmp_withid/'+f)
+   315                                                     # os.rmtree(path)
+   316                                                     # get the next beginning
+   317   1598.4 MiB     -6.5 MiB           4               previous_max_value = df.agg({"__idconsec__": "max"}).first()[0]
+   318                                                     # Select two colums: __id__ and args.column(which we need to dedup) and Switch to rdd format. [RDD is for parallelization]
+   319   1598.4 MiB     -6.5 MiB           4               df = df.select("__idconsec__", args.column).rdd
+   320                                                     # Re-distributed rdd with args.num_perm * 2; Create a new RDD; and Persist this RDD with the default storage level (MEMORY_ONLY) using cache()
+   321   1598.4 MiB     -6.5 MiB           4               df = df.repartition(args.num_perm * 2)
+   322                                                     # do hash generate on every items
+   323                                                     # return band_idx, hash_value, idx
+   324   1598.4 MiB    -13.0 MiB           8               df = df.flatMap(
+   325   1598.4 MiB     -6.5 MiB           4                   lambda x: generate_hash_values(
+   326                                                             content=x[1],
+   327                                                             idx=x[0],
+   328                                                             num_perm=args.num_perm,
+   329                                                             ngram_size=args.ngram_size,
+   330                                                             hashranges=HASH_RANGES,
+   331                                                             permutations=PERMUTATIONS,
+   332                                                         )
+   333                                                     )
+   334   1598.4 MiB     -6.5 MiB           4               if records:
+   335   1598.4 MiB     -6.5 MiB           3                   records = records.union(df)
+   336                                                     else:
+   337   1560.6 MiB      0.0 MiB           1                   records = df
+   338                                                     # https://stackoverflow.com/a/39967109/11821194
+   339                                                     # actully del df + gc.collect() will unpersist the rdd directly
+   340   1598.4 MiB     -6.5 MiB           4               df.unpersist()
+   341   1598.4 MiB     -6.5 MiB           4               del df
+   342   1598.1 MiB     -7.2 MiB           4               gc.collect()
+   343                                                     # deptColumns = ["bucket_id","hashes","__idconsec__"]
+   344                                                     # print(records.toDF(deptColumns).agg({"__idconsec__": "max"}).first()[0])
+   345                                                 else:
+   346                                                     print(f"Warning! Loading {f} failed.")
+   347                                                 # if we want to save hashes; [but we are still facing loading b64decode problem; maybe the utf-8 encoding by-default in csv dumping?]
+   348                                                 # try: records.toDF().write.format("csv").mode("overwrite").save(args.output)
+   349                                                 # and in generate_hash: use base64.b64encode(bytes(hashvalues[start:end].byteswap().data))
+   350                                                 # load and decode:
+   351                                                 # df = spark.read.option("delimiter", ",").csv(args.data_path).rdd
+   352                                                 # df = df.flatMap(lambda x: [x[0], base64.b64decode(x[1]), x[2]]).cache()
+   353   1597.1 MiB     -1.0 MiB           1       return records
