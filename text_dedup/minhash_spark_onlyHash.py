@@ -270,13 +270,13 @@ def unionAll(dfs):
 def decode_hash(x):
     return [(x[0], bytes(base64.b64decode(x[1].encode('utf-8'))), x[2])]
     
-@profile
+# @profile
 def load_hash(data_path):
     # if we want to save hashes; [but we are still facing loading b64decode problem; maybe the utf-8 encoding by-default in csv dumping?]
     # try: records.toDF().write.format("csv").mode("overwrite").save(args.output)
     # and in generate_hash: use base64.b64encode(bytes(hashvalues[start:end].byteswap().data))
     # load and decode:
-    # !!: BinaryType: Represents 1-byte signed integer numbers. The range of numbers is from -128 to 127.
+    # !!: ByteType: Represents 1-byte signed integer numbers. The range of numbers is from -128 to 127.
     # !!: BinaryType: Represents byte sequence values.
     # columns: _c0, _c1, _c2
     records = spark.read.option("delimiter", ",").csv(data_path)
@@ -301,7 +301,7 @@ def load_hash(data_path):
 
 # https://pypi.org/project/memory-profiler/
 # https://www.databricks.com/blog/2022/11/30/memory-profiling-pyspark.html
-@profile
+# @profile
 def load_and_hash(files, args):
     records = None
     if os.path.exists('PREV_ID'):
@@ -313,6 +313,9 @@ def load_and_hash(files, args):
         path = os.path.join(args.data_path, f)
         fio = open(path, 'r')
         lines = fio.readlines() 
+        if args.rm_ori:
+            print("Warning! removing original file: {}".format(path))
+            os.system("rm {}".format(path))
         df, stat = lines2passage(lines, spark)
         # lines = [base64.b64decode(l).decode('utf-8') for l in lines] # we run convertTxt first
         # try:
@@ -436,6 +439,7 @@ if __name__ == "__main__":
     parser.add_argument("--r", type=int, default=None, help="Number of rows per band")
     parser.add_argument("--column", "-c", type=str, default="content", help="Column to deduplicate")
     parser.add_argument("--output", "-o", type=str, required=True, help="Output directory")
+    parser.add_argument("--rm_ori", action="store_true", help="Remove original files")
     args = parser.parse_args()
 
     conf = SparkConf()
@@ -454,11 +458,11 @@ if __name__ == "__main__":
 
     if args.b is None or args.r is None:
         B, R = optimal_param(args.threshold, args.num_perm)
-        log.info(f"Using optimal parameters: {B}, {R}")
+        log.warn(f"Using optimal parameters: {B}, {R}")
     else:
         B, R = args.b, args.r
         _B, _R = optimal_param(args.threshold, args.num_perm)
-        log.info(f"Using parameters: {B}, {R}, with optimal parameters: {_B}, {_R}")
+        log.warn(f"Using parameters: {B}, {R}, with optimal parameters: {_B}, {_R}")
 
     HASH_RANGES = [(i * R, (i + 1) * R) for i in range(B)]
     PERMUTATIONS = np.array(

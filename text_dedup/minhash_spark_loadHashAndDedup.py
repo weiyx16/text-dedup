@@ -163,13 +163,13 @@ def decode_hash(x):
 
 # https://pypi.org/project/memory-profiler/
 # https://www.databricks.com/blog/2022/11/30/memory-profiling-pyspark.html
-@profile
+# @profile
 def load_hash(data_path):
     # if we want to save hashes; [but we are still facing loading b64decode problem; maybe the utf-8 encoding by-default in csv dumping?]
     # try: records.toDF().write.format("csv").mode("overwrite").save(args.output)
     # and in generate_hash: use base64.b64encode(bytes(hashvalues[start:end].byteswap().data))
     # load and decode:
-    # !!: BinaryType: Represents 1-byte signed integer numbers. The range of numbers is from -128 to 127.
+    # !!: ByteType: Represents 1-byte signed integer numbers. The range of numbers is from -128 to 127.
     # !!: BinaryType: Represents byte sequence values.
     # columns: _c0, _c1, _c2
     records = spark.read.option("delimiter", ",").csv(data_path)
@@ -192,7 +192,7 @@ def load_hash(data_path):
     return records
 
 
-@profile
+# @profile
 def create_edges(records):
     edges = (
         # group by band_idx&hash_value (find ones in the same band with same hash value)
@@ -207,7 +207,7 @@ def create_edges(records):
     return edges
 
 
-@profile
+# @profile
 def find_components(a):
     # a = edges
     while True:

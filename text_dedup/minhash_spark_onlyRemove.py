@@ -147,6 +147,7 @@ if __name__ == "__main__":
     parser.add_argument("--r", type=int, default=None, help="Number of rows per band")
     parser.add_argument("--column", "-c", type=str, default="content", help="Column to deduplicate")
     parser.add_argument("--dedup_ids", "-d", type=str, required=True, help="Duplicated ids directory")
+    parser.add_argument("--rm_ori", action="store_true", help="Remove original files")
     args = parser.parse_args()
 
     conf = SparkConf()
@@ -212,3 +213,7 @@ if __name__ == "__main__":
         after_count = df.count()
         print(" For file {}: before / after: {} / {}".format(args.data_path.strip('\n')+'/'+data_path, before_count, after_count))
         df.write.format("json").mode("overwrite").save(args.data_path.strip('\n')+'_dedup/'+data_path)
+
+        if args.rm_ori:
+            print("Warning! removing original file: {}".format(args.data_path.strip('\n')+'_tmp_withid/'+data_path))
+            os.system("rm {}".format(args.data_path.strip('\n')+'_tmp_withid/'+data_path))
