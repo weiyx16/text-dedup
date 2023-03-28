@@ -285,7 +285,9 @@ if __name__ == "__main__":
     time.sleep(10)
 
     edges = create_edges(records)
+    print(" We create edges ")
     results = find_components(edges).collect()
+    print(" We create components ")
     edges.unpersist()
     del edges
     gc.collect()

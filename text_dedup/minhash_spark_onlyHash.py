@@ -341,6 +341,7 @@ def load_and_hash(files, args):
             # os.rmtree(path)
             # get the next beginning
             previous_max_value = df.agg({"__idconsec__": "max"}).first()[0]
+            print(previous_max_value)
             
             df = df.rdd
             # Re-distributed rdd with args.num_perm * 2; Create a new RDD; and Persist this RDD with the default storage level (MEMORY_ONLY) using cache()
