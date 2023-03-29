@@ -227,7 +227,8 @@ same as prev
 ## Run Deduplicate [?mins]
 rm -r /tmp/code/dedup_ids
 rm data_paths.txt
-echo $WHAT_YOU_WANT >> data_paths.txt
+cd hashes
+ls -d $PWD/* > ../data_paths.txt
 cat data_paths.txt
 
 # e.g.
@@ -238,17 +239,141 @@ cat data_paths.txt
 spark-submit --executor-memory=50G --driver-memory=1200G --deploy-mode=client --executor-cores=64 minhash_spark_loadHashAndDedup.py   --data_path_file "data_paths.txt"   --output "/tmp/code/dedup_ids"   --column "text"   --ngram 13   --num_perm 64   --threshold 0.8
 ## > w/o CC202104
 # > total items found:  2559154195 // 5(bucket)
-# > duplicate items found:  x
+# > duplicate items found:  14168413 ~ 3%
+# > time: 1.1h
+# memory leak during saving
 
+## > w/ CC202104 
+# 372G hashes  [C4 have shorter documents.]
+# 232G for C4 and 140G for others
+ 29G     ./hashes/C4-P8_hashes
+ 15G     ./hashes/CC202050_ab_hashes
+ 9.5G    ./hashes/C4-P1_ab_hashes
+ 29G     ./hashes/C4-P4_hashes
+ 15G     ./hashes/CC202050_ac_hashes
+5.3G    ./hashes/PileCC_part0of2_ab_hashes                          
+5.3G    ./hashes/PileCC_part0of2_aa_hashes                                     
+21G     ./hashes/OWT12_hashes
+4.7G    ./hashes/PileCC_part1of2_aa_hashes
+9.5G    ./hashes/C4-P1_ac_hashes
+18G     ./hashes/CC202104_ac_hashes
+5.3G    ./hashes/PileCC_part0of2_ac_hashes
+29G     ./hashes/C4-P5_hashes
+9.5G    ./hashes/C4-P1_aa_hashes
+15G     ./hashes/CC202050_aa_hashes
+29G     ./hashes/C4-P2_hashes
+18G     ./hashes/CC202104_ab_hashes
+29G     ./hashes/C4-P6_hashes
+29G     ./hashes/C4-P7_hashes
+4.7G    ./hashes/PileCC_part1of2_ab_hashes
+4.7G    ./hashes/PileCC_part1of2_ac_hashes
+18G     ./hashes/CC202104_aa_hashes
+29G     ./hashes/C4-P3_hashes
+372G    ./hashes/
 
+# > total items found:  2969626370 // 5(bucket)
+# > # > duplicate items found:  18219965 ~ 3% (but we test on OWT12-Exact Dedup ~12%; test on original OWT1: Dedup 0.5%) [maybe for C4: not dedup; but for others; 3%/40% occupation ~ 7.5%]
+# > time; load+edges is fast; slow in computing connected components
+# memory leak during saving; [但是看文件又存下来了233；确认load的情况: reload with 18219965]
+
+-------------=========== 
+> Do it with two splits and we union them. We still face the RAM problems
+## 1. do on CC202104 + CC202050 first with 99G hashes: 749851490//5: duplicate: 1934130; 1.3% 这里的重复率很低 (22mins)
+## 2. do on C4 + PileCC + OWT with 273G hashes: 2219774880//5; duplicate: 10903134
+## 5. do on PileCCOWT+CC202104: 812738825//5; duplicate: 5695028
+## 6. do on PileCCOWT+CC202050: 741645965//5; duplicate: 5537122; ~3.5%; 主要是OWT自己内部的重复（~4M）
+
+## [False] 3. do on C4+CC202104: 2227980405//5; duplicate: 7533394 [memory bug.. 一样的情况，memory leak了，但是存下来了] 
+## [False] 4. do on C4+CC202050: 2156887545//5; duplicate: 6876497 [memory bug..]
+
+# 4.1 do on C4-half1+CC202050: 1248130665//5; duplicate: 3519469
+# 4.2 do on C4-half2+CC202050: 1248136195//5; duplicate: 3518651
+# 3.1 do on C4-half1+CC202104: 1319223525//5; duplicate: 3921641
+# 3.2 do on C4-half2+CC202104: 1319229055//5; duplicate: 3920134
+# addition: C4 (we don't need it, have be included in C4 + PileCC + OWT)
+
+Then we merge the repeated results;
+Sum = 1934130 + 10903134 + 5695028 + 5537122 + 7533394 + 6876497 = 38479305
+-------------=========== 
+最终用的是global duplication: 18219965的版本。
 
 ######
 +++++++++ --------- BEGIN REMOVAL --------- +++++++++
 ######
+疑问：
+1. 到底有没有跨数据集的去重；比如OWT12自己remove了K，OWT12和Others remove了K+n，现在n很小
+虽然当时在OWT1-1+OWT1-2 和 OWT1-1+OWT1-3上测没问题
+额外测试方式：
+PileCC自己(P1+P2) Dedup（Hash处理的时候Pile分为1和2）: (P1+P2: 337408)；
+PileCC-P1自己 Dedup: 168482；PileCC-P2自己 Dedup: 135724；合计304206
+PileCC+Others Dedup: total: 588764 (P1: 302567; P2: 286197)；
+看起来是能cross validation的
 
-## Run Remove [?mins]
+/output/azcopy copy "https://vlpretraineastus.blob.core.windows.net/crawl-text/cc_merged/dedup_ids/dedup_ids_global/?sv=2021-04-10&st=2022-09-06T05%3A36%3A34Z&se=2025-09-05T05%3A36%3A00Z&sr=c&sp=racwdxltf&sig=8yIkemAX4aA8frrJoW1snsJB07suONjEHC5zR736MQw%3D" /tmp/code --recursive
+
+# OWT12 [done]
+before / after: 32755440 / 28701515 = 4053925 (OWT12 self: 4047890, 这样一看数据集重复的好少啊。但是Pile那边相对多一点，多了100%的removal)
+
 export DATASET="OWT12"
-export DATA_FOLDER="/tmp/code/text-dedup/text_dedup/$DATASET"
-spark-submit --executor-memory=50G --driver-memory=200G --deploy-mode=client --executor-cores=64 minhash_spark_onlyRemove.py   --data_path $DATA_FOLDER --dedup_ids "/tmp/code/dedup_ids"  --column "text"   --ngram 13   --num_perm 64   --threshold 0.8 --rm_ori
+export DATA_FOLDER="/tmp/code/text-dedup-github/text_dedup/$DATASET"
+spark-submit --executor-memory=50G --driver-memory=400G --deploy-mode=client --executor-cores=64 minhash_spark_onlyRemove.py   --data_path $DATA_FOLDER --dedup_ids "/tmp/code/dedup_ids_global"  --column "text"   --ngram 13   --num_perm 64   --threshold 0.8
 
-! DO ON others
+# PILECC-P1 [done]
+P1aa: before / after: 8471944 / 8374749
+P1ab: before / after: 8458944 / 8357748
+P1ac: before / after: 8479927 / 8375751
+Total: 25410815 / 25108248 => 302567 / 25410815 = 1.2%
+export DATASET="P1ac"
+export DATA_FOLDER="/tmp/code/text-dedup-github/text_dedup/$DATASET"
+spark-submit --executor-memory=50G --driver-memory=400G --deploy-mode=client --executor-cores=64 minhash_spark_onlyRemove.py   --data_path $DATA_FOLDER --dedup_ids "/tmp/code/dedup_ids_global"  --column "text"   --ngram 13   --num_perm 64   --threshold 0.8
+
+/output/azcopy copy PileCC_part0of2/  "https://vlpretraineastus.blob.core.windows.net/crawl-text/cc_merged/fuzzy_minhashLsh_n13_h64_sim08/?sv=2021-04-10&st=2022-09-06T05%3A36%3A34Z&se=2025-09-05T05%3A36%3A00Z&sr=c&sp=racwdxltf&sig=8yIkemAX4aA8frrJoW1snsJB07suONjEHC5zR736MQw%3D" --recursive
+
+# PILECC-P2 [done]
+P2aa: before / after: 7430974 / 7337353
+P2ab: before / after: 7432971 / 7337702
+P2ac: before / after: 7423130 / 7325823
+Total: 22287075 / 22000878 => 286197 / 22287075 = 1.3%
+export DATASET="PILECC-P2ac"
+export DATA_FOLDER="/tmp/code/text-dedup/text_dedup/$DATASET"
+spark-submit --executor-memory=50G --driver-memory=400G --deploy-mode=client --executor-cores=64 minhash_spark_onlyRemove.py   --data_path $DATA_FOLDER --dedup_ids "/tmp/code/dedup_ids_global"  --column "text"   --ngram 13   --num_perm 64   --threshold 0.8
+
+# C4-P1 [done]
+P1aa: before / after: 15146125 / 14948141
+P1ab: before / after: 15147998 / 14937727
+P1ac: before / after: 15143571 / 14925870
+Total: 45437694 / 44811738 => 625956 / 45437694 = 1.4%
+export DATASET="P1aa"
+export DATA_FOLDER="/tmp/code/text-dedup/text_dedup/$DATASET"
+spark-submit --executor-memory=50G --driver-memory=400G --deploy-mode=client --executor-cores=64 minhash_spark_onlyRemove.py   --data_path $DATA_FOLDER --dedup_ids "/tmp/code/dedup_ids_global"   --column "text"   --ngram 13   --num_perm 64   --threshold 0.8
+
+# C4-P2-8
+C4-P2: before / after: 45437930 / 44746433
+C4-P3: before / after: 45437115 / 44702321
+C4-P4: before / after: 45437531 / 44662681
+C4-P5: before / after: 45437007 / 44624837
+C4-P6: before / after: 45438137 / 44594927
+C4-P7: before / after: 45437485 / 44561870
+C4-P8: before / after: 45438747 / 44532168
+Total: 317464536 / 313000000 => 4464536 / 317464536 = 1.4%
+export DATASET="C4-P5"
+export DATA_FOLDER="/tmp/code/text-dedup/text_dedup/$DATASET"
+spark-submit --executor-memory=50G --driver-memory=800G --deploy-mode=client --executor-cores=64 minhash_spark_onlyRemove.py   --data_path $DATA_FOLDER --dedup_ids "/tmp/code/dedup_ids_global"   --column "text"   --ngram 13   --num_perm 64   --threshold 0.8
+
+# CC2020-50
+aa: before / after: 22583456 / 21508388
+ab: before / after: 22657412 / 21565213
+ac: before / after: 22634995 / 21537438
+Total: 67875863 / 64611039 => 3264824 / 67875863 = 4.8%
+export DATASET="CC202050_aa"
+export DATA_FOLDER="/tmp/code/text-dedup/text_dedup/$DATASET"
+spark-submit --executor-memory=50G --driver-memory=400G --deploy-mode=client --executor-cores=64 minhash_spark_onlyRemove.py   --data_path $DATA_FOLDER --dedup_ids "/tmp/code/dedup_ids_global"   --column "text"   --ngram 13   --num_perm 64   --threshold 0.8
+
+# CC2021-04
+aa: before / after: 27340796 / 26002567
+ab: before / after: 27406106 / 26052101
+ac: before / after: 27347533 / 25991986
+Total: 82094435 / 78046654 => 4047771 / 82094435 = 4.9%
+export DATASET="CC202104_ab"
+export DATA_FOLDER="/tmp/code/text-dedup/text_dedup/$DATASET"
+spark-submit --executor-memory=50G --driver-memory=400G --deploy-mode=client --executor-cores=64 minhash_spark_onlyRemove.py   --data_path $DATA_FOLDER --dedup_ids "/tmp/code/dedup_ids_global"   --column "text"   --ngram 13   --num_perm 64   --threshold 0.8

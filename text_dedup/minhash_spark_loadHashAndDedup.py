@@ -304,8 +304,9 @@ if __name__ == "__main__":
     components.show(1)
     print("duplicate items found: ", components.count())
     time.sleep(10)
-    components = components.rdd.repartition(args.num_perm * 2)
-    components.toDF().write.format("csv").mode("overwrite").save(args.output)
+    # components = components.rdd.repartition(args.num_perm * 2)
+    # components.toDF().write.format("csv").mode("overwrite").save(args.output)
+    components.write.format("csv").mode("overwrite").save(args.output)
 
 
     # we should deal with it one-by-one
