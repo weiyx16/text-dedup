@@ -210,9 +210,14 @@ if __name__ == "__main__":
         # we only keep these rows. (don't find in any components)
         # TODO: why not left one for each component??
         df = df.filter(F.col("component").isNull()).drop("__idconsec__", "component").persist(StorageLevel.MEMORY_AND_DISK) # cache()
+        rm_df = rm_df.filter(F.col("component").isNotNull()).drop("__idconsec__", "component").persist(StorageLevel.MEMORY_AND_DISK) # cache()
+        
         after_count = df.count()
+        rm_count = rm_df.count()
         print(" For file {}: before / after: {} / {}".format(args.data_path.strip('\n')+'/'+data_path, before_count, after_count))
+        print(" For file {}: before / rm: {} / {}".format(args.data_path.strip('\n')+'/'+data_path, before_count, rm_count))
         df.write.format("json").mode("overwrite").save(args.data_path.strip('\n')+'_dedup/'+data_path)
+        rm_df.write.format("json").mode("overwrite").save(args.data_path.strip('\n')+'_rm/'+data_path)
 
         if args.rm_ori:
             print("Warning! removing original file: {}".format(args.data_path.strip('\n')+'_tmp_withid/'+data_path))
